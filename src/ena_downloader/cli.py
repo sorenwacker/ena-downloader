@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
 """
-Enhanced ENA Downloader - With comprehensive accession support and direct assembly access
+ENA Downloader
 """
 
 import argparse
@@ -16,6 +15,7 @@ import time
 from urllib.parse import urlparse
 
 import requests
+from tqdm import tqdm
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -72,6 +72,208 @@ ACCESSION_PATTERNS = {
         r"^[A-Z]{3}[0-9]{7}\.[0-9]+$",  # ABC1234567.1, etc.
     ],
 }
+
+
+def format_bytes(bytes_value):
+    """
+    Format bytes into human readable format.
+
+    Args:
+        bytes_value: Number of bytes
+
+    Returns:
+        Formatted string (e.g., '1.23 MB')
+    """
+    if bytes_value == 0:
+        return "0 B"
+
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if bytes_value < 1024.0:
+            return f"{bytes_value:.2f} {unit}"
+        bytes_value /= 1024.0
+    return f"{bytes_value:.2f} PB"
+
+
+def format_speed(bytes_per_second):
+    """
+    Format download speed into human readable format.
+
+    Args:
+        bytes_per_second: Speed in bytes per second
+
+    Returns:
+        Formatted string (e.g., '1.23 MB/s')
+    """
+    return f"{format_bytes(bytes_per_second)}/s"
+
+
+def format_time(seconds):
+    """
+    Format time duration into human readable format.
+
+    Args:
+        seconds: Time duration in seconds
+
+    Returns:
+        Formatted string (e.g., '1h 23m 45s')
+    """
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        minutes = int(seconds // 60)
+        remaining_seconds = seconds % 60
+        return f"{minutes}m {remaining_seconds:.0f}s"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    remaining_seconds = seconds % 60
+    return f"{hours}h {minutes}m {remaining_seconds:.0f}s"
+
+
+class DownloadProgress:
+    """
+    Class to track download progress and statistics.
+    """
+
+    def __init__(self, filename):
+        """
+        Initialize download progress tracker.
+
+        Args:
+            filename: Name of the file being downloaded
+        """
+        self.filename = filename
+        self.start_time = time.time()
+        self.bytes_downloaded = 0
+        self.total_bytes = 0
+        self.last_update_time = self.start_time
+        self.last_bytes = 0
+        self.speed_samples = []
+        self.pbar = None
+
+    def start_progress_bar(self, total_bytes):
+        """
+        Initialize the progress bar.
+
+        Args:
+            total_bytes: Total size of the file in bytes
+        """
+        self.total_bytes = total_bytes
+        self.pbar = tqdm(
+            total=total_bytes,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"Downloading {self.filename}",
+            ncols=100,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+        )
+
+    def update(self, bytes_downloaded):
+        """
+        Update progress with new bytes downloaded.
+
+        Args:
+            bytes_downloaded: Number of bytes downloaded in this update
+        """
+        self.bytes_downloaded += bytes_downloaded
+        current_time = time.time()
+
+        # Calculate instantaneous speed
+        time_diff = current_time - self.last_update_time
+        if time_diff > 0:
+            speed = (self.bytes_downloaded - self.last_bytes) / time_diff
+            self.speed_samples.append(speed)
+
+            # Keep only last 10 samples for smoothing
+            if len(self.speed_samples) > 10:
+                self.speed_samples.pop(0)
+
+        self.last_update_time = current_time
+        self.last_bytes = self.bytes_downloaded
+
+        # Update progress bar
+        if self.pbar:
+            self.pbar.update(bytes_downloaded)
+
+    def get_average_speed(self):
+        """
+        Get average download speed.
+
+        Returns:
+            Average speed in bytes per second
+        """
+        if self.speed_samples:
+            return sum(self.speed_samples) / len(self.speed_samples)
+
+        elapsed_time = time.time() - self.start_time
+        if elapsed_time > 0:
+            return self.bytes_downloaded / elapsed_time
+        return 0
+
+    def get_elapsed_time(self):
+        """
+        Get elapsed download time.
+
+        Returns:
+            Elapsed time in seconds
+        """
+        return time.time() - self.start_time
+
+    def close(self):
+        """
+        Close the progress bar and log final statistics.
+        """
+        if self.pbar:
+            self.pbar.close()
+
+        elapsed_time = self.get_elapsed_time()
+        avg_speed = self.get_average_speed()
+
+        logger.info(
+            "Download completed: %s | Size: %s | Time: %s | Avg Speed: %s",
+            self.filename,
+            format_bytes(self.bytes_downloaded),
+            format_time(elapsed_time),
+            format_speed(avg_speed),
+        )
+
+
+def get_file_size_from_response(response):
+    """
+    Get file size from HTTP response headers.
+
+    Args:
+        response: HTTP response object
+
+    Returns:
+        File size in bytes or None if not available
+    """
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            return int(content_length)
+        except ValueError:
+            pass
+    return None
+
+
+def get_ftp_file_size(ftp_host, ftp_path):
+    """
+    Get file size from FTP server.
+
+    Args:
+        ftp_host: FTP hostname
+        ftp_path: Path to file on FTP server
+
+    Returns:
+        File size in bytes or None if not available
+    """
+    try:
+        with ftplib.FTP(ftp_host) as ftp:
+            ftp.login()  # Anonymous login
+            return ftp.size(ftp_path)
+    except Exception:
+        return None
 
 
 def identify_accession_type(accession):
@@ -174,7 +376,7 @@ def search_assembly(accession):
     Returns:
         Minimal assembly info object sufficient for browser API download
     """
-    logger.info(f"Creating minimal assembly object for direct download: {accession}")
+    logger.info("Creating minimal assembly object for direct download: %s", accession)
 
     # Create a minimal assembly info object with just the accession
     return [{"assembly_accession": accession, "assembly_name": accession, "assembly_title": f"Assembly {accession}"}]
@@ -210,12 +412,7 @@ def search_sequence(accession):
 
         # Filter to match the specific version if provided
         if "." in accession:
-            sequences = [
-                s
-                for s in sequences
-                if s.get("sequence_accession") == base_accession
-                and str(s.get("sequence_version")) == accession.split(".")[1]
-            ]
+            sequences = [s for s in sequences if s.get("sequence_accession") == base_accession and str(s.get("sequence_version")) == accession.split(".")[1]]
 
         if sequences:
             logger.info("Found sequence: %s", accession)
@@ -259,12 +456,7 @@ def search_protein(accession):
 
         # Filter to match the specific version if provided
         if "." in accession:
-            proteins = [
-                p
-                for p in proteins
-                if p.get("coding_accession") == base_accession
-                and str(p.get("coding_version")) == accession.split(".")[1]
-            ]
+            proteins = [p for p in proteins if p.get("coding_accession") == base_accession and str(p.get("coding_version")) == accession.split(".")[1]]
 
         if proteins:
             logger.info("Found protein: %s", proteins[0].get("coding_product", "Unknown protein"))
@@ -781,7 +973,7 @@ def check_file_status(file_path, expected_md5):
 
 def download_file(url, output_dir, expected_md5=None, force=False):
     """
-    Download a single file.
+    Download a single file with progress tracking and statistics.
 
     Args:
         url: URL of the file to download
@@ -807,7 +999,7 @@ def download_file(url, output_dir, expected_md5=None, force=False):
                 # Generate a generic filename using the accession from the URL if possible
                 parts = url.split("/")
                 for part in parts:
-                    if part.startswith("GCA_") or part.startswith("GCF_"):
+                    if part.startswith("GCA_", "GCF_"):
                         filename = f"{part}.data"
                         break
                 if not filename:
@@ -839,25 +1031,49 @@ def download_file(url, output_dir, expected_md5=None, force=False):
                 # Should never reach here as status would be "missing" if not found
                 pass
 
-        logger.info("Downloading %s", filename)
+        # Initialize progress tracker
+        progress = DownloadProgress(filename)
+
+        logger.info("Starting download: %s", filename)
 
         # Download the file
         if url.startswith("ftp://"):
-            # FTP download
+            # FTP download with progress
             ftp_host = parsed_url.netloc
             ftp_path = parsed_url.path
 
+            # Get file size for progress bar
+            file_size = get_ftp_file_size(ftp_host, ftp_path)
+            if file_size:
+                progress.start_progress_bar(file_size)
+
             with ftplib.FTP(ftp_host) as ftp:
                 ftp.login()  # Anonymous login
+
+                def ftp_callback(data):
+                    f.write(data)
+                    progress.update(len(data))
+
                 with open(output_path, "wb") as f:
-                    ftp.retrbinary(f"RETR {ftp_path}", f.write)
+                    ftp.retrbinary(f"RETR {ftp_path}", ftp_callback)
         else:
-            # HTTP(S) download
+            # HTTP(S) download with progress
             with requests.get(url, stream=True) as r:
                 r.raise_for_status()
+
+                # Get file size for progress bar
+                file_size = get_file_size_from_response(r)
+                if file_size:
+                    progress.start_progress_bar(file_size)
+
                 with open(output_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                        if chunk:  # Filter out keep-alive chunks
+                            f.write(chunk)
+                            progress.update(len(chunk))
+
+        # Close progress bar and log statistics
+        progress.close()
 
         # Verify the downloaded file
         if expected_md5 and not verify_md5(output_path, expected_md5):
@@ -1074,6 +1290,96 @@ def determine_project_accession(info_dict):
     return None
 
 
+class DownloadSession:
+    """
+    Class to track overall download session statistics.
+    """
+
+    def __init__(self):
+        """Initialize download session tracker."""
+        self.session_start_time = time.time()
+        self.total_files = 0
+        self.completed_files = 0
+        self.failed_files = 0
+        self.total_bytes_downloaded = 0
+        self.file_stats = []
+
+    def add_file_result(self, filename, success, bytes_downloaded, download_time, avg_speed):
+        """
+        Add result of a file download.
+
+        Args:
+            filename: Name of the downloaded file
+            success: True if download was successful
+            bytes_downloaded: Number of bytes downloaded
+            download_time: Time taken to download in seconds
+            avg_speed: Average download speed in bytes per second
+        """
+        if success:
+            self.completed_files += 1
+            self.total_bytes_downloaded += bytes_downloaded
+
+        self.file_stats.append(
+            {
+                "filename": filename,
+                "success": success,
+                "size": bytes_downloaded,
+                "time": download_time,
+                "speed": avg_speed,
+            }
+        )
+
+        if not success:
+            self.failed_files += 1
+
+    def get_session_summary(self):
+        """
+        Get summary of the download session.
+
+        Returns:
+            Dictionary with session statistics
+        """
+        session_time = time.time() - self.session_start_time
+        overall_speed = self.total_bytes_downloaded / session_time if session_time > 0 else 0
+
+        return {
+            "total_files": self.total_files,
+            "completed_files": self.completed_files,
+            "failed_files": self.failed_files,
+            "success_rate": (self.completed_files / self.total_files * 100) if self.total_files > 0 else 0,
+            "total_size": self.total_bytes_downloaded,
+            "session_time": session_time,
+            "overall_speed": overall_speed,
+        }
+
+    def print_session_summary(self):
+        """Print a summary of the download session."""
+        summary = self.get_session_summary()
+
+        print("\n" + "=" * 60)
+        print("DOWNLOAD SESSION SUMMARY")
+        print("=" * 60)
+        print(f"Total files processed: {summary['total_files']}")
+        print(f"Successfully downloaded: {summary['completed_files']}")
+        print(f"Failed downloads: {summary['failed_files']}")
+        print(f"Success rate: {summary['success_rate']:.1f}%")
+        print(f"Total data downloaded: {format_bytes(summary['total_size'])}")
+        print(f"Total session time: {format_time(summary['session_time'])}")
+        print(f"Overall average speed: {format_speed(summary['overall_speed'])}")
+
+        if self.file_stats:
+            # Find fastest and slowest downloads
+            successful_stats = [stat for stat in self.file_stats if stat["success"]]
+            if successful_stats:
+                fastest = max(successful_stats, key=lambda x: x["speed"])
+                slowest = min(successful_stats, key=lambda x: x["speed"])
+
+                print(f"\nFastest download: {fastest['filename']} at {format_speed(fastest['speed'])}")
+                print(f"Slowest download: {slowest['filename']} at {format_speed(slowest['speed'])}")
+
+        print("=" * 60)
+
+
 def main():
     """Main function to run the enhanced ENA downloader with comprehensive accession support."""
     parser = argparse.ArgumentParser(
@@ -1100,9 +1406,7 @@ def main():
         default=False,
         help="Use submitted files instead of standardized FASTQ files (for study/project accessions)",
     )
-    parser.add_argument(
-        "--download", action="store_true", default=False, help="Download the files (default is to only list them)"
-    )
+    parser.add_argument("--download", action="store_true", default=False, help="Download the files (default is to only list them)")
     parser.add_argument(
         "--force-download",
         action="store_true",
@@ -1113,9 +1417,7 @@ def main():
     parser.add_argument("--max-files", type=int, default=None, help="Maximum number of files to download")
     parser.add_argument("--format", choices=["table", "urls"], default="table", help="Output format for listing files")
     parser.add_argument("--metadata", action="store_true", default=False, help="Download and display sample metadata")
-    parser.add_argument(
-        "--metadata-format", choices=["json", "csv"], default="json", help="Format for saving metadata files"
-    )
+    parser.add_argument("--metadata-format", choices=["json", "csv"], default="json", help="Format for saving metadata files")
     parser.add_argument(
         "--metadata-file",
         type=str,
@@ -1318,15 +1620,11 @@ def main():
         if accession_type == "assembly":
             file_headers = ["#", "Filename", "Type", "Description", "Assembly"]
             for i, file in enumerate(files, 1):
-                file_table_data.append(
-                    (i, file["filename"], file["type"], file.get("description", ""), file.get("assembly", ""))
-                )
+                file_table_data.append((i, file["filename"], file["type"], file.get("description", ""), file.get("assembly", "")))
         elif accession_type in ["sequence", "protein"]:
             file_headers = ["#", "Filename", "Type", "Description", "Accession"]
             for i, file in enumerate(files, 1):
-                file_table_data.append(
-                    (i, file["filename"], file["type"], file.get("description", ""), file.get(accession_type, ""))
-                )
+                file_table_data.append((i, file["filename"], file["type"], file.get("description", ""), file.get(accession_type, "")))
         else:
             # Default format for project, run, experiment, etc.
             file_headers = ["#", "Filename", "Type", "Sample", "Run"]
@@ -1350,7 +1648,6 @@ def main():
 
     # Create standard directory structure
     project_dir = os.path.join(base_dir, project_accession)
-    # project_dir = base_dir
     metadata_dir = os.path.join(project_dir, DIR_STRUCTURE["metadata"])
 
     # Create directories if needed for downloads or metadata
@@ -1367,19 +1664,39 @@ def main():
 
     # Download files if requested
     if args.download and files:
-        logger.info("Downloading %d files", len(files))
+        logger.info("Starting download of %d files", len(files))
 
-        # Download files
+        # Initialize download session tracker
+        session = DownloadSession()
+        session.total_files = len(files)
+
+        # Download files with progress tracking
         downloaded_files = []
-        for file in files:
+        for i, file in enumerate(files, 1):
+            print(f"\n[{i}/{len(files)}] Processing: {file['filename']}")
+
             # Determine appropriate output directory based on file type and accession type
             output_dir = get_output_directory(base_dir, project_accession, file["type"], accession_type)
 
             # Download the file
+            start_time = time.time()
             downloaded_file = download_file(file["url"], output_dir, file.get("md5"), force=args.force_download)
+
+            # Track download statistics
             if downloaded_file:
                 downloaded_files.append(downloaded_file)
+                file_size = os.path.getsize(downloaded_file)
+                download_time = time.time() - start_time
+                avg_speed = file_size / download_time if download_time > 0 else 0
+
+                session.add_file_result(file["filename"], True, file_size, download_time, avg_speed)
+
                 logger.info("Saved to: %s", downloaded_file)
+            else:
+                session.add_file_result(file["filename"], False, 0, time.time() - start_time, 0)
+
+        # Print session summary
+        session.print_session_summary()
 
         logger.info("Successfully downloaded %d of %d files", len(downloaded_files), len(files))
 
