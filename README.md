@@ -1,143 +1,97 @@
-# ena_downloader
+# ENA Downloader
 
-A great package.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-## Sections in this README
+Command-line tool for downloading sequencing data and metadata from the European Nucleotide Archive (ENA).
 
-- [Installation](#installation)
-- [Running the main script](#running-the-main-script)
-- [Adding dependencies](#adding-dependencies)
-- [Running test](#running-tests)
-- [Formatting and checking](#formatting-and-checking)
-- [Documentation](#documentation)
-- [Versions](#versions)
-- [Publishing your package](#publishing-the-package)
-- [License](#license)
+## Features
+
+- Download FASTQ files from ENA projects, runs, or experiments
+- Fetch genome assemblies (GCA/GCF accessions)
+- Download nucleotide and protein sequences
+- Retrieve sample and project metadata
+- Progress tracking with speed statistics
+- MD5 checksum verification
+- Automatic directory organization
+- Resume interrupted downloads
+
+## Supported Accession Types
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Project | PRJEB*, PRJNA*, SRP* | PRJNA123456 |
+| Run | ERR*, SRR*, DRR* | ERR1234567 |
+| Experiment | ERX*, SRX* | SRX123456 |
+| Assembly | GCA_*, GCF_* | GCA_002870075.4 |
+| Sample | SAMEA*, SAMN* | SAMEA123456 |
+| Sequence | Various | AB123456.1 |
 
 ## Installation
 
+```bash
+uv sync
+```
 
-1. Install [uv](https://docs.astral.sh/uv/):
+## Usage
 
-2. Install the dependencies, including the dev dependencies
-
-    ```bash
-    uv sync
-    ```
-    or install only the runtime dependencies
-
-    ```bash
-    uv sync --no-dev
-    ```
-
-3. Install the pre-commit hook.
-This will set up pre-commit to run the checks automatically on your files before you commit them.
-
-    ```bash
-    uv run pre-commit install
-    ```
-
-  **Remember that if the pre-commit checks fail, you can always commit by skipping the checks with `git commit --no-verify`**
-
-## Running the main script
-
-Execute the main script with
+### List files for a project
 
 ```bash
-uv run main_script
+uv run ena-download PRJNA123456
 ```
 
-## Adding dependencies
-
-
-Add dependencies by running
-```bash
-uv add numpy
-```
-if you want to install torch with CUDA support, you can do it via:
-```bash
-uv add torch==2.4.1+cu121 torchaudio==2.4.1+cu121 torchvision==0.19.1+cu121 --extra-index-url https://download.pytorch.org/whl/cu121
-```
-
-## Running tests
-
-Run your tests with
+### Download all FASTQ files
 
 ```bash
-uv run pytest --cov=src ./tests
+uv run ena-download PRJNA123456 --download
 ```
 
-## Formatting and checking
-
-The tools for formatting and linting your code for errors are all bundled with [pre-commit](https://pre-commit.com/). Included are:
-- [ruff](https://astral.sh/ruff) - linting and formatting
-- [yamlfix](https://github.com/lyz-code/yamlfix) - linting and formatting for .yaml files
-- various other small fixes and checks (see the [`.pre-commit-config.yaml`](.pre-commit-config.yaml) file for more information)
-
-It's possible that pre-commit will make changes to your files when it runs the checks, so you should add those changes to your commit before you commit your code. A typical workflow would look like this:
+### Download a genome assembly
 
 ```bash
-git add -u
-git commit -m "My commit message"
-# pre-commit will run the checks here; if it makes changes, you'll need to add them to your commit
-git add -u
-git commit -m "My commit message"
-# changes should have all been made by now and the commit should pass if there are no other issues
-# if your commit fails again here, you have to fix the issues manually (not everything can be fixed automatically).
+uv run ena-download GCA_002870075.4 --download
 ```
 
-One thing that is worth knowing is how to lint your files outside of the context of a commit. You can run the checks manually by running the following command:
+### Filter files by pattern
 
 ```bash
-uv run pre-commit run --all-files
+uv run ena-download PRJNA123456 --download --pattern ".*_1.fastq.gz"
 ```
 
-This will run the checks on all files in your git project, regardless of whether they're staged for commit or not.
-
-## Documentation
-
-Generate the documentation locally with
+### Download with metadata
 
 ```bash
-uv run mkdocs serve --watch ./
+uv run ena-download PRJNA123456 --download --metadata
 ```
 
-## Versions
+## Options
 
-Versions are managed automatically via [hatch-vcs](https://github.com/ofek/hatch-vcs), which follows the versioning scheme from [setuptools-scm](https://setuptools-scm.readthedocs.io/en/latest/usage/#default-versioning-scheme).
+| Option | Description |
+|--------|-------------|
+| `--download` | Download files (default: list only) |
+| `--pattern` | Regex to filter files |
+| `--exclude` | Regex to exclude files |
+| `--output-dir` | Output directory (default: ena_downloads) |
+| `--max-files` | Limit number of files |
+| `--metadata` | Fetch and save metadata |
+| `--force-download` | Re-download existing files |
+| `--use-submitted` | Use original submitted files |
 
-To create a new version, tag the code with `git tag <version>`, e.g. `git tag v0.1.0`, and push the tag with `git push --tags`.
+## Output Structure
 
-You can check the version by running
+Downloads are organized by accession:
 
-```bash
-uv run hatch version
 ```
-
-In python you can see the version with
-```python
-from ena_downloader import __version__
-
-print(f"ena_downloader version is { __version__ }")
+ena_downloads/
+  PRJNA123456/
+    raw-data/
+      ERR123456_1.fastq.gz
+      ERR123456_2.fastq.gz
+    metadata/
+      PRJNA123456_metadata.json
 ```
-
-## Publishing the package
-
-
-If you're ready to publish your package to [PyPI](https://pypi.org/) (i.e. you want to be able to run `pip install my-package-name` from anywhere), follow the [uv instructions](https://docs.astral.sh/uv/guides/publish/).
-In short, they boil down to running:
-
-1. Build the wheel
-
-    ```bash
-    uv build
-    ```
-
-2. Upload the wheel to PyPI
-
-    ```bash
-    uv publish
-    ```
 
 ## License
-Distributed under the terms of the [MIT license](LICENSE).
+
+MIT License
